@@ -75,9 +75,15 @@ enum Command {
         /// else the newest Windows SDK's).
         #[arg(long)]
         validate: bool,
-        /// Also create a host D3D12 pipeline for each emitted shader.
+        /// Also create a host D3D12 pipeline for each emitted shader
+        /// (translated for this host's wave sizes unless --host-lanes says).
         #[arg(long)]
         pipelines: bool,
+        /// Translate for a host whose waves are MIN-MAX lanes (32-32 for
+        /// NVIDIA, 32-64 for AMD RDNA): shaders that need another wave size
+        /// are listed as failures. Default: any wave size.
+        #[arg(long, value_name = "MIN-MAX", value_parser = parse_lanes)]
+        host_lanes: Option<(u32, u32)>,
         /// Print one line per program and outcome.
         #[arg(long)]
         list: bool,
@@ -152,7 +158,8 @@ fn main() -> Result<()> {
             pipelines,
             list,
             jobs,
-        } => translate::run(paths, validate, pipelines, list, jobs),
+            host_lanes,
+        } => translate::run(paths, validate, pipelines, list, jobs, host_lanes),
         Command::Run {
             exe,
             unimplemented,
@@ -163,6 +170,23 @@ fn main() -> Result<()> {
         } => run::run(&exe, unimplemented, strict, execute, console),
         Command::Config => show_config(),
     }
+}
+
+/// `MIN-MAX` lanes per wave, or one size `N`.
+fn parse_lanes(s: &str) -> Result<(u32, u32), String> {
+    let (a, b) = s.split_once('-').unwrap_or((s, s));
+    let n = |x: &str| {
+        x.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| n.is_power_of_two() && (4..=128).contains(n))
+            .ok_or_else(|| format!("{x:?} is not a wave size (4 to 128, a power of two)"))
+    };
+    let (a, b) = (n(a)?, n(b)?);
+    if a > b {
+        return Err(format!("{a} is more than {b}"));
+    }
+    Ok((a, b))
 }
 
 fn show_config() -> Result<()> {
