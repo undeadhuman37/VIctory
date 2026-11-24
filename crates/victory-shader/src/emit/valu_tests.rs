@@ -170,7 +170,11 @@ pub(super) static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(()
 
 /// Runs `shader` on every available SM 6.6 host (hardware GPU and WARP) for
 /// each 4-dword input set and invokes `check(backend, case_index, inputs, result_dword)`.
-fn run_cases(shader: &HostShader, cases: &[[u32; 4]], check: impl FnMut(&str, usize, [u32; 4], u32)) {
+fn run_cases(
+    shader: &HostShader,
+    cases: &[[u32; 4]],
+    check: impl FnMut(&str, usize, [u32; 4], u32),
+) {
     run_cases_on(shader, cases, &[("hardware", false), ("warp", true)], check);
 }
 
@@ -956,7 +960,12 @@ fn v_cndmask_on_an_untracked_mask_tests_this_lanes_bit() {
     let hw = &[("hardware", false)];
     run_cases_on(
         &from_sgpr,
-        &[[10, 20, 0, 0], [10, 20, 0, 1], [10, 20, 0, 2], [10, 20, 0, !0]],
+        &[
+            [10, 20, 0, 0],
+            [10, 20, 0, 1],
+            [10, 20, 0, 2],
+            [10, 20, 0, !0],
+        ],
         hw,
         |label, i, inp, got| {
             let want = if inp[3] & 1 != 0 { inp[1] } else { inp[0] };
@@ -968,5 +977,87 @@ fn v_cndmask_on_an_untracked_mask_tests_this_lanes_bit() {
         run_cases_on(&k, &[[10, 20, 0, 0]], hw, |label, _, inp, got| {
             assert_eq!(got, inp[pick], "{label} inline {mask}");
         });
+    }
+}
+
+/// A descriptor whose first use is a scalar buffer load, and whose record
+/// count (dword 2) the code also reads as a number: it refused with "a scalar
+/// memory read as data" because only image and vector-buffer uses were known.
+#[test]
+fn a_descriptor_read_as_data_and_used_by_a_scalar_buffer_load_lowers() {
+    // s_load_dwordx4 s[dst:dst+3], s[4:5], offset
+    let load = |dst: u8, offset: u32| {
+        let [w0, _] = s_load_dwordx4(dst, 4);
+        [w0, 125 << 25 | offset]
+    };
+    let mut words = vec![s_mov_b32(5, 0x80)];
+    words.extend(load(8, 16)); // the UAV, table entry 1
+    words.extend(load(12, 0)); // the SRV, table entry 0
+    // s_buffer_load_dword s16, s[12:15], 0
+    words.extend([0x3D << 26 | 0x08 << 18 | 16 << 6 | 12 >> 1, 125 << 25]);
+    words.push(vop1(0x001, 0, sgpr(14))); // v_mov_b32 v0, s14 (record count)
+    words.push(0x4A00_0010); // v_add_nc_u32 v0, s16, v0
+    words.extend(buffer_store_dword(0, 8, 0));
+    words.push(S_ENDPGM);
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let native = NativeProgram {
+        stage: HwStage::Cs,
+        wave64: false,
+        vgprs: 2,
+        layout: vec![RootParam {
+            root: RootType::Table,
+            table_offset_dwords: 0,
+            sgprs: 1,
+            base_register: 0,
+            user_data: 4,
+            slot: 1,
+        }],
+        used: vec![
+            UsedResource {
+                kind: ResourceType::Srv,
+                root: RootType::Table,
+                table_offset_dwords: 0,
+                lower_bound: 0,
+                stride: 0,
+                dwords: 4,
+                user_data: 4,
+                slot: 1,
+            },
+            UsedResource {
+                kind: ResourceType::Uav,
+                root: RootType::Table,
+                table_offset_dwords: 4,
+                lower_bound: 0,
+                stride: 0,
+                dwords: 4,
+                user_data: 4,
+                slot: 1,
+            },
+        ],
+        io: StageIo::Cs(ComputeIo {
+            rsrc2: 5 << 1,
+            threads: [1, 1, 1],
+        }),
+        code,
+    };
+    let p = ir::build(&native.code, native.wave64, native.vgprs).unwrap();
+    let st = structure::structure(&p).unwrap();
+    let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+    let io = io::raise(&p, &native).unwrap();
+    let lowered = lower::lower(&lower::Parts {
+        native: &native,
+        p: &p,
+        st: &st,
+        io: &io,
+        res: &res,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        prims: Vec::new(),
+        mesh_stride: 0,
+    });
+    let lowered = lowered.expect("lower");
+    if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+        let mut dxil = lowered.dxil.clone();
+        v.validate(&mut dxil).expect("DXIL validation failed");
     }
 }

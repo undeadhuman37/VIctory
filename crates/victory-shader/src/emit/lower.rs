@@ -3042,6 +3042,13 @@ impl<'a> Lower<'a> {
                         };
                         ((kind | u, 0x409), Some(kind))
                     }
+                    // A scalar buffer load (`s_buffer_load_*`) reads raw dwords.
+                    Fields::Smem { .. } if un.starts_with("s_buffer_load_dword") => {
+                        if used.is_some_and(|u| u.kind == ResourceType::Cbv) {
+                            return Err("a constant buffer's descriptor read as data");
+                        }
+                        ((11 | u, 0), None)
+                    }
                     Fields::Buffer { idxen, format, .. } => {
                         let stride = used.map_or(0, |u| u.stride);
                         let props = if un.starts_with("buffer_load_format")
