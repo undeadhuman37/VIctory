@@ -348,10 +348,37 @@ fn refuse(reason: &'static str, shaders: &[Arc<Shader>]) -> Option<HostPipeline>
     None
 }
 
+/// The shader hashes in `VICTORY_REFUSE_HASHES`, comma-separated, as the
+/// pipeline diagnostics print them (bisecting a GPU hang).
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+fn parse_hashes(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
+}
+
+/// Whether a shader of `shaders` is listed in `VICTORY_REFUSE_HASHES`
+/// (diagnostics builds only).
+#[cfg(feature = "diagnostics")]
+fn refused_by_hash(shaders: &[Arc<Shader>]) -> bool {
+    static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let list = LIST.get_or_init(|| {
+        std::env::var("VICTORY_REFUSE_HASHES")
+            .map(|v| parse_hashes(&v))
+            .unwrap_or_default()
+    });
+    shaders.iter().any(|s| list.contains(&s.hash))
+}
+
 impl HostPipeline {
     /// A host pipeline for vertex and pixel shaders with the graphics
     /// state `g`, or for one compute shader.
     pub(crate) fn new(shaders: &[Arc<Shader>], g: Option<&GraphicsState>) -> Option<HostPipeline> {
+        #[cfg(feature = "diagnostics")]
+        if refused_by_hash(shaders) {
+            return refuse("a shader listed in VICTORY_REFUSE_HASHES", shaders);
+        }
         let find = |stage| shaders.iter().find(|s| s.stage == stage);
         let compute = match shaders {
             [cs] if cs.stage == "compute" => Some(cs),
@@ -784,6 +811,13 @@ fn root_signature(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refused_hash_list_parses() {
+        let got = super::parse_hashes(" 0D9d1c59733d6340, ,ab,");
+        assert_eq!(got, ["0d9d1c59733d6340", "ab"]);
+        assert!(super::parse_hashes("").is_empty());
+    }
+
     use super::{dxil_wave_lanes, wave_lanes_unsupported};
 
     fn synthetic_dxbc_with_psv0(min_lanes: u32, max_lanes: u32) -> Vec<u8> {
