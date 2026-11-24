@@ -632,7 +632,11 @@ impl<'a> Lanes<'a> {
                 .filter(|(lo, hi)| lo != hi)
                 .map(|&(lo, hi)| (hi, lo))
                 .collect(),
-            paired_masks: if self.p.wave64 { self.masks } else { Map::default() },
+            paired_masks: if self.p.wave64 {
+                self.masks
+            } else {
+                Map::default()
+            },
             active: self.active,
             bools: self.b,
             exits,
@@ -665,6 +669,51 @@ impl<'a> Lanes<'a> {
         }
     }
 
+    /// The scalar a `v_readlane_b32` of a constant lane gives back: the one
+    /// a `v_writelane_b32` of the same lane put into that VGPR (the console
+    /// compiler spills scalars, lane masks among them, into VGPR lanes).
+    fn spilled(&self, v: Value) -> Option<Value> {
+        let at = |v: Value| {
+            let &(b, i) = self.defs.get(&v)?;
+            Some(&self.p.blocks[b].insts[i])
+        };
+        let lane = |op: Option<&Operand>| match op {
+            Some(&Operand::Const(c @ 128..=192)) => Some(c - 128),
+            _ => None,
+        };
+        let read = at(v)?;
+        let Fields::Valu(r) = &read.fields else {
+            return None;
+        };
+        let k = lane(r.src.get(1)).filter(|_| read.name() == "v_readlane_b32")?;
+        let Some(&Operand::Vector { reg, .. }) = r.src.first() else {
+            return None;
+        };
+        let mut vgpr = read.read(Reg::V(reg))?;
+        // shortcut: only a straight chain of lane writes; a phi or any other
+        // write of the VGPR ends the search (the mask stays opaque).
+        for _ in 0..64 {
+            let w = at(vgpr)?;
+            let Fields::Valu(w) = &w.fields else {
+                return None;
+            };
+            if at(vgpr)?.name() != "v_writelane_b32" {
+                return None;
+            }
+            let (Some(&Operand::Scalar { code, .. }), Some(&Operand::Vector { reg, .. })) =
+                (w.src.first(), w.dst.as_ref())
+            else {
+                return None;
+            };
+            let inst = at(vgpr)?;
+            if lane(w.src.get(1))? == k {
+                return inst.read(Reg::S(code));
+            }
+            vgpr = inst.read(Reg::V(reg))?;
+        }
+        None
+    }
+
     /// The mask a value pair holds, and whether it derives from EXEC or a
     /// VALU result.
     fn mask(&mut self, k: Key) -> (Bool, bool) {
@@ -675,7 +724,11 @@ impl<'a> Lanes<'a> {
             return (m, false);
         }
         let p = self.p;
-        let (m, derived) = match self.join(k) {
+        let spilled = self
+            .spilled(k.0)
+            .zip(self.spilled(k.1))
+            .filter(|&(a, b)| (a, b) != k);
+        let (m, derived) = match spilled.map(|s| self.mask(s)).or_else(|| self.join(k)) {
             Some(join) => join,
             None => {
                 let (lo, hi) = (self.defs.get(&k.0).copied(), self.defs.get(&k.1).copied());
