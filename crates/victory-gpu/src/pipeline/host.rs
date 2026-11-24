@@ -325,16 +325,27 @@ fn wave_lanes_unsupported(
     console_wave64: bool,
     emitted_wave: Option<(u32, u32)>,
     (host_min, host_max): (u32, u32),
+    allow_wave64_compute: bool,
 ) -> bool {
-    // Stopgap: console wave64 compute hangs NVIDIA (as #578 first refused it) and its
-    // work is dropped until wave64 compute runs correctly on 32-lane waves.
-    if stage == "compute" && console_wave64 && host_max < 64 {
+    // Stopgap: console wave64 compute hung NVIDIA (as #578 first refused it) and its
+    // work is dropped by default. `VICTORY_WAVE64_COMPUTE=1` lifts it for the forms the
+    // translator makes for 32-lane waves (split halves, console flow, per lane), which
+    // the emitted-range check below still holds to the host's wave sizes. Flip the
+    // default once a world run on an NVIDIA host stays up with it.
+    if stage == "compute" && console_wave64 && host_max < 64 && !allow_wave64_compute {
         return true;
     }
     if let Some((req_min, req_max)) = emitted_wave {
         return host_max < req_min || host_min > req_max;
     }
     stage == "mesh" && console_wave64 && host_max < 64
+}
+
+/// Whether console wave64 compute may run on hosts with narrower waves
+/// (`VICTORY_WAVE64_COMPUTE=1`).
+fn wave64_compute_allowed() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VICTORY_WAVE64_COMPUTE").is_ok_and(|v| v == "1"))
 }
 
 /// Logs a pipeline that gets no host pipeline, once per reason.
@@ -388,7 +399,13 @@ impl HostPipeline {
         }
         let host_lanes = host()?.wave_lanes();
         if let Some(ms) = mesh
-            && wave_lanes_unsupported(ms.stage, ms.wave64(), None, host_lanes)
+            && wave_lanes_unsupported(
+                ms.stage,
+                ms.wave64(),
+                None,
+                host_lanes,
+                wave64_compute_allowed(),
+            )
         {
             return refuse(
                 if host_lanes.1 < 32 {
@@ -402,7 +419,13 @@ impl HostPipeline {
         for (s, _) in &stages {
             let t = s.translated()?;
             let emitted = dxil_wave_lanes(&t.host.dxil);
-            if wave_lanes_unsupported(s.stage, s.wave64(), emitted, host_lanes) {
+            if wave_lanes_unsupported(
+                s.stage,
+                s.wave64(),
+                emitted,
+                host_lanes,
+                wave64_compute_allowed(),
+            ) {
                 return refuse(
                     if host_lanes.1 < 32 {
                         "a shader requiring wider waves than this host supports (e.g. 4-lane WARP)"
@@ -784,7 +807,28 @@ fn root_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::{dxil_wave_lanes, wave_lanes_unsupported};
+    use super::dxil_wave_lanes;
+
+    /// The default: the stopgap on.
+    fn wave_lanes_unsupported(
+        stage: &str,
+        console_wave64: bool,
+        emitted: Option<(u32, u32)>,
+        host: (u32, u32),
+    ) -> bool {
+        super::wave_lanes_unsupported(stage, console_wave64, emitted, host, false)
+    }
+
+    #[test]
+    fn wave64_compute_switch_lifts_only_the_stopgap() {
+        let on =
+            |emitted, host| super::wave_lanes_unsupported("compute", true, emitted, host, true);
+        // Forms for 32-lane waves run; a module that needs 64 lanes still does not.
+        assert!(!on(Some((32, 32)), (32, 32)));
+        assert!(!on(None, (32, 32)));
+        assert!(on(Some((64, 64)), (32, 32)));
+        assert!(on(Some((32, 32)), (4, 4)));
+    }
 
     fn synthetic_dxbc_with_psv0(min_lanes: u32, max_lanes: u32) -> Vec<u8> {
         let mut psv = Vec::new();
