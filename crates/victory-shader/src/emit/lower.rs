@@ -2956,46 +2956,81 @@ impl<'a> Lower<'a> {
                     _ => None,
                 })
             });
-        let Some((at, first)) = use_at else {
-            return Err("a descriptor read only as data");
-        };
-        let src = Source::Loaded { load: site, first };
-        let used = self.used_kind(&src);
-        let ui: &Inst = &self.x.p.blocks[at.0].insts[at.1];
-        let un = ui.name();
-        let uav = un.contains("store")
-            || un.contains("atomic")
-            || used.is_some_and(|u| u.kind == ResourceType::Uav);
-        let u = if uav { 0x1000 } else { 0 };
-        let (props, image) = match &ui.fields {
-            Fields::Image { dim, .. } => {
-                let kind = match dim {
-                    0 => 1,
-                    1 => 2,
-                    2 => 4,
-                    4 => 6,
-                    5 => 7,
-                    _ => return Err("an image dimension (cube or MSAA)"),
+        let (src, first, uav, props, image) = match use_at {
+            Some((at, first)) => {
+                let src = Source::Loaded { load: site, first };
+                let used = self.used_kind(&src);
+                let ui: &Inst = &self.x.p.blocks[at.0].insts[at.1];
+                let un = ui.name();
+                let uav = un.contains("store")
+                    || un.contains("atomic")
+                    || used.is_some_and(|u| u.kind == ResourceType::Uav);
+                let u = if uav { 0x1000 } else { 0 };
+                let (props, image) = match &ui.fields {
+                    Fields::Image { dim, .. } => {
+                        let kind = match dim {
+                            0 => 1,
+                            1 => 2,
+                            2 => 4,
+                            4 => 6,
+                            5 => 7,
+                            _ => return Err("an image dimension (cube or MSAA)"),
+                        };
+                        ((kind | u, 0x409), Some(kind))
+                    }
+                    Fields::Buffer { idxen, format, .. } => {
+                        let stride = used.map_or(0, |u| u.stride);
+                        let props = if un.starts_with("buffer_load_format")
+                            || un.starts_with("buffer_store_format")
+                        {
+                            (10 | u, 0x409)
+                        } else if *idxen && format.is_none() && stride >= 4 && stride.is_multiple_of(4) {
+                            (12 | u, stride)
+                        } else {
+                            (11 | u, 0)
+                        };
+                        if used.is_some_and(|u| u.kind == ResourceType::Cbv) {
+                            return Err("a constant buffer's descriptor read as data");
+                        }
+                        (props, None)
+                    }
+                    _ => return Err("a scalar memory read as data"),
                 };
-                ((kind | u, 0x409), Some(kind))
+                (src, first, uav, props, image)
             }
-            Fields::Buffer { idxen, format, .. } => {
-                let stride = used.map_or(0, |u| u.stride);
-                let props = if un.starts_with("buffer_load_format")
-                    || un.starts_with("buffer_store_format")
-                {
-                    (10 | u, 0x409)
-                } else if *idxen && format.is_none() && stride >= 4 && stride.is_multiple_of(4) {
-                    (12 | u, stride)
-                } else {
-                    (11 | u, 0)
+            None => {
+                // Read as data and never used: the table's range says what
+                // the entry is, and an entry no range names (one a run-time
+                // index into the heap reaches) is an image if eight dwords.
+                // shortcut: an image is taken for 2D (its other kinds have
+                // other sizes) and a buffer for raw or structured; a view of
+                // another shape reads sizes of the wrong rank. Upgrade by
+                // looking up a sibling entry's use.
+                const NONE: Why = "a descriptor read only as data";
+                let src = Source::Loaded { load: site, first: 0 };
+                let used = self.used_kind(&src);
+                let in_views = self
+                    .scalar
+                    .get(&site)
+                    .and_then(|a| self.x.native.layout.get(a.param))
+                    .is_some_and(|rp| matches!(rp.root, RootType::Table | RootType::ResourceHeap));
+                let (uav, dwords, stride) = match used {
+                    Some(u) if matches!(u.kind, ResourceType::Srv | ResourceType::Uav) => {
+                        (u.kind == ResourceType::Uav, u.dwords, u.stride)
+                    }
+                    None if in_views => (false, count as u8, 0),
+                    _ => return Err(NONE),
                 };
-                if used.is_some_and(|u| u.kind == ResourceType::Cbv) {
-                    return Err("a constant buffer's descriptor read as data");
+                let u = if uav { 0x1000 } else { 0 };
+                match dwords {
+                    8 => (src, 0, uav, (2 | u, 0x409), Some(2)),
+                    4 if stride >= 4 && stride.is_multiple_of(4) => {
+                        (src, 0, uav, (12 | u, stride), None)
+                    }
+                    4 if used.is_some() => (src, 0, uav, (11 | u, 0), None),
+                    _ => return Err(NONE),
                 }
-                (props, None)
             }
-            _ => return Err("a scalar memory read as data"),
         };
         let h = self.handle(site, &src, false, props)?;
         let c = self.cur;
