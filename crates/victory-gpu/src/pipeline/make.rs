@@ -91,6 +91,30 @@ pub(crate) fn missing(p: &Pending) -> Option<String> {
     }
 }
 
+/// Why a draw of this pipeline is dropped, for the window report: the stages
+/// and either the shaders that do not translate, "being made", or "refused".
+pub(crate) fn why_dropped(p: &Pending) -> String {
+    let kind: Vec<_> = p.shaders.iter().map(|s| s.stage).collect();
+    let why = match p.made.get() {
+        Some(Some(_)) => "has a host pipeline (its bind or draw state failed)".to_owned(),
+        None => "being made".to_owned(),
+        Some(None) => {
+            let failed: Vec<String> = p
+                .shaders
+                .iter()
+                .filter(|s| matches!(s.translated.get(), Some(None)))
+                .map(|s| format!("does not translate {}", s.hash))
+                .collect();
+            if failed.is_empty() {
+                format!("refused {:?}", p.shaders)
+            } else {
+                failed.join(" + ")
+            }
+        }
+    };
+    format!("{}: {why}", kind.join("+"))
+}
+
 /// Signalled whenever a worker has made a pipeline.
 static DONE: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 

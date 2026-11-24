@@ -124,6 +124,12 @@ fn dropped(pipeline: usize) {
     }
 }
 
+/// Counts a draw or dispatch recorded but not run on the host.
+fn drop_count(pipeline: usize) {
+    DROPPED.fetch_add(1, Ordering::Relaxed);
+    crate::pipeline::count_drop(pipeline as This);
+}
+
 /// Dispatches run on the host so far.
 static DISPATCHED: AtomicU64 = AtomicU64::new(0);
 
@@ -542,7 +548,7 @@ impl State {
     pub(crate) fn dispatch(&mut self, list: &HostList, x: u32, y: u32, z: u32) {
         #[cfg(feature = "diagnostics")]
         if crate::pipeline::is_skipped(self.pipeline as This) {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             crate::pipeline::note_drop(self.pipeline as This);
             return;
         }
@@ -551,7 +557,7 @@ impl State {
                 pipeline = format_args!("{:#x}", self.pipeline),
                 "a dispatch without a host pipeline dropped"
             );
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             #[cfg(feature = "diagnostics")]
             crate::pipeline::note_drop(self.pipeline as This);
             return;
@@ -561,7 +567,7 @@ impl State {
             return;
         }
         if !self.bind(list, p, true) {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             return;
         }
         #[cfg(feature = "diagnostics")]
@@ -626,7 +632,7 @@ impl State {
                 Err(_) => false,
             };
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -885,7 +891,7 @@ impl State {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -972,7 +978,7 @@ impl State {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            drop_count(self.pipeline);
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }

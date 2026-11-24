@@ -308,6 +308,35 @@ pub(crate) fn take_drops() -> Vec<(String, u64)> {
     drops
 }
 
+/// Draws and dispatches dropped since the last [`take_top_drops`], by title
+/// pipeline, with what the host pipeline is made from.
+type DropsBy = HashMap<usize, (u64, Arc<make::Pending>)>;
+static DROPPED_BY: Mutex<Option<DropsBy>> = Mutex::new(None);
+
+/// Counts a draw or dispatch dropped for want of a host pipeline.
+pub(crate) fn count_drop(this: This) {
+    if this.is_null() {
+        return;
+    }
+    let mut by = DROPPED_BY.lock().unwrap_or_else(|e| e.into_inner());
+    by.get_or_insert_with(HashMap::new)
+        .entry(this as usize)
+        .or_insert_with(|| (0, pipeline(this).host.clone()))
+        .0 += 1;
+}
+
+/// The `n` pipelines with the most drops since the last call, with their
+/// counts and causes (for the window report).
+pub(crate) fn take_top_drops(n: usize) -> Vec<(u64, String)> {
+    let by = DROPPED_BY.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let mut by: Vec<_> = by.into_iter().flatten().collect();
+    by.sort_unstable_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+    by.into_iter()
+        .take(n)
+        .map(|(_, (count, host))| (count, make::why_dropped(&host)))
+        .collect()
+}
+
 /// The stage's container, if it has one.
 fn copy(stage: &'static str, code: &Bytecode) -> Option<Arc<Shader>> {
     if code.code.is_null() || code.size == 0 {
