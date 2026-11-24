@@ -7480,7 +7480,8 @@ mod tests {
         assert!(f10(0x3FF).is_nan());
         // A 16-bit float is a half already, sign included.
         assert_eq!(half(0xBC00 << half_shift(16)), -1.0);
-    } 
+    }
+
     #[test]
     fn image_atomics_64_bit_lower_with_typed_int64_flag() {
         use crate::native::{RootParam, RootType};
@@ -7521,9 +7522,9 @@ mod tests {
                 code,
             };
             let p = ir::build(&native.code, false, 8).unwrap();
-            let res = resource::track(&p, &native.layout, native.stage).unwrap();
-            let io = io::raise(&p, &native).unwrap();
             let st = structure::structure(&p).unwrap();
+            let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+            let io = io::raise(&p, &native).unwrap();
             lower(&Parts {
                 native: &native,
                 p: &p,
@@ -7540,6 +7541,11 @@ mod tests {
         let add = run(0xF044_1388).unwrap();
         let cmp = run(0xF040_1F88).unwrap();
         for lowered in [add, cmp] {
+            if let Ok(mut v) =
+                crate::emit::validator::Validator::load(crate::emit::validator::Validator::default_path().as_deref())
+            {
+                v.validate(&mut lowered.dxil.clone()).expect("DXIL validation failed");
+            }
             let sfi0 = crate::dxbc::Container::parse(&lowered.dxil)
                 .unwrap()
                 .part(crate::dxbc::FourCC::SFI0)
@@ -7559,5 +7565,4 @@ mod tests {
             );
         }
     }
-
 }
