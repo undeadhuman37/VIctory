@@ -299,6 +299,23 @@ fn dxil_wave_lanes(dxil: &[u8]) -> Option<(u32, u32)> {
     Some((min.max(1), if max == 0 { u32::MAX } else { max }))
 }
 
+/// The shader-feature mask (`SFI0`) of a DXIL container, 0 when absent.
+fn dxil_features(dxil: &[u8]) -> u64 {
+    victory_shader::Container::parse(dxil)
+        .ok()
+        .and_then(|c| Some(c.part(victory_shader::FourCC::SFI0)?.data))
+        .and_then(|d| Some(u64::from_le_bytes(d.get(..8)?.try_into().ok()?)))
+        .unwrap_or(0)
+}
+
+/// Whether a module whose shader features are `features` needs 64-bit
+/// atomics on typed or heap resources the host (`typed`, `heap`) lacks.
+fn int64_atomics_unsupported(features: u64, (typed, heap): (bool, bool)) -> bool {
+    const TYPED: u64 = 0x40_0000;
+    const HEAP: u64 = 0x1000_0000;
+    features & TYPED != 0 && !typed || features & HEAP != 0 && !heap
+}
+
 /// Whether a translated `stage` program cannot run on a host whose waves have
 /// `host_lanes = (min, max)` lanes.
 ///
@@ -391,6 +408,12 @@ impl HostPipeline {
         }
         for (s, _) in &stages {
             let t = s.translated()?;
+            if int64_atomics_unsupported(dxil_features(&t.host.dxil), host()?.int64_typed_atomics()) {
+                return refuse(
+                    "a shader with 64-bit atomics on typed resources, on a host without them",
+                    shaders,
+                );
+            }
             let emitted = dxil_wave_lanes(&t.host.dxil);
             if wave_lanes_unsupported(s.stage, s.wave64(), emitted, host_lanes) {
                 return refuse(
@@ -745,7 +768,7 @@ fn root_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::{dxil_wave_lanes, wave_lanes_unsupported};
+    use super::{dxil_wave_lanes, int64_atomics_unsupported, wave_lanes_unsupported};
 
     fn synthetic_dxbc_with_psv0(min_lanes: u32, max_lanes: u32) -> Vec<u8> {
         let mut psv = Vec::new();
@@ -844,5 +867,14 @@ mod tests {
             dxil_wave_lanes(&synthetic_dxbc_with_psv0(32, 32)),
             Some((32, 32))
         );
+    }
+
+    #[test]
+    fn int64_atomics_need_the_hosts_support() {
+        let (typed, heap) = (0x40_0000, 0x1000_0000);
+        assert!(!int64_atomics_unsupported(0x8000, (false, false)));
+        assert!(int64_atomics_unsupported(typed | heap, (true, false)));
+        assert!(int64_atomics_unsupported(typed | heap, (false, true)));
+        assert!(!int64_atomics_unsupported(typed | heap, (true, true)));
     }
 }

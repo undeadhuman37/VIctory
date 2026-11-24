@@ -449,6 +449,40 @@ impl Host {
         })
     }
 
+    /// Whether the host takes 64-bit atomics on typed resources and on
+    /// resources of the descriptor heap (`D3D12_OPTIONS9`, `OPTIONS11`);
+    /// both false when a query fails.
+    pub(crate) fn int64_typed_atomics(&self) -> (bool, bool) {
+        static CAPS: OnceLock<(bool, bool)> = OnceLock::new();
+        *CAPS.get_or_init(|| {
+            let mut o9 = D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
+            let mut o11 = D3D12_FEATURE_DATA_D3D12_OPTIONS11::default();
+            // SAFETY: each query writes its own structure of the given size.
+            let caps = unsafe {
+                (
+                    self.device
+                        .CheckFeatureSupport(
+                            D3D12_FEATURE_D3D12_OPTIONS9,
+                            (&raw mut o9).cast(),
+                            size_of_val(&o9) as u32,
+                        )
+                        .is_ok()
+                        && o9.AtomicInt64OnTypedResourceSupported.as_bool(),
+                    self.device
+                        .CheckFeatureSupport(
+                            D3D12_FEATURE_D3D12_OPTIONS11,
+                            (&raw mut o11).cast(),
+                            size_of_val(&o11) as u32,
+                        )
+                        .is_ok()
+                        && o11.AtomicInt64OnDescriptorHeapResourceSupported.as_bool(),
+                )
+            };
+            tracing::info!(typed = caps.0, heap = caps.1, "host 64-bit typed atomics");
+            caps
+        })
+    }
+
     /// The host GPU's supported wave-lane range `(WaveLaneCountMin,
     /// WaveLaneCountMax)` from `D3D12_FEATURE_D3D12_OPTIONS1` (defaults to
     /// `(32, 64)` when the query fails, so nothing is refused for it).
