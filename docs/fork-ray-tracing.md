@@ -66,13 +66,41 @@ shaders and emulates the one instruction.
 - With `VICTORY_BVH_BUILDER=1` the builder still stays off in a real run: a few
   of its pipelines are refused by the host (they still ask for 64-lane waves on
   a 32-lane GPU) or do not translate.
-- Five shadow-mask trace programs do not translate yet.
+- Five shadow-mask trace programs do not translate (see below).
 - An access to a title page that has no host copy is lost (a read gives zero, a
   store is dropped).
 - Not publicly documented, and assumed: the instruction's rounding, the order
   of two boxes entered at the same distance, and the result for a ray exactly
   through an edge.
 - Cost on the GPU is unmeasured.
+
+## The five shadow-mask trace programs
+
+All five are refused with "a descriptor read only as data". Each loads
+four-dword buffer descriptors from the resource heap at an index computed at
+run time, and takes the 40-bit base address out of dwords 0 and 1
+(`s_and_b32`, `s_lshr_b64`) to walk the structure behind it.
+
+`Lower::view_address` already serves this for a descriptor at a fixed place in
+a table: the host passes the view's title address in two root constants. It
+cannot serve a heap index known only on the GPU.
+
+Plan, smallest first:
+
+1. A second per-heap-slot table next to the element strides (`SLOT_STRIDES`):
+   the title address (two dwords) of the buffer view at each slot, written
+   where `descriptor/host.rs` writes the stride.
+2. In `descriptor_data`, a four-dword load from the resource heap whose
+   dwords are only read as numbers takes dwords 0 and 1 from that table at its
+   index; dwords 2 and 3 stay without a value. A synthetic test binds two
+   buffers and checks each lane reads its own address, as the waterfall tests
+   do.
+3. The host makes ready the title memory behind those views before the
+   dispatch, as it does for the addresses in root views today. This is the
+   open question: the shader may pick any buffer of the heap.
+
+Translating these programs lights nothing by itself: ray tracing also needs
+the structure builder to run (see above).
 
 ## Where to look
 
