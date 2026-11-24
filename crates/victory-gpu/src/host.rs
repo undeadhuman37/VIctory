@@ -449,6 +449,46 @@ impl Host {
         })
     }
 
+    /// The host GPU's supported wave-lane range `(WaveLaneCountMin,
+    /// WaveLaneCountMax)` from `D3D12_FEATURE_D3D12_OPTIONS1` (defaults to
+    /// `(32, 64)` when the query fails, so nothing is refused for it).
+    /// Note: WARP (`VICTORY_D3D12_WARP=1`) reports `(4, 4)` even on 64-lane
+    /// hardware, so shaders requiring wider waves are refused there too.
+    pub(crate) fn wave_lanes(&self) -> (u32, u32) {
+        static LANES: OnceLock<(u32, u32)> = OnceLock::new();
+        *LANES.get_or_init(|| {
+            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+            // SAFETY: the query writes its own structure of the given size.
+            let ok = unsafe {
+                self.device
+                    .CheckFeatureSupport(
+                        D3D12_FEATURE_D3D12_OPTIONS1,
+                        (&raw mut options).cast(),
+                        size_of_val(&options) as u32,
+                    )
+                    .is_ok()
+            };
+            let (min, max) = if ok
+                && options.WaveLaneCountMin > 0
+                && options.WaveLaneCountMax >= options.WaveLaneCountMin
+            {
+                (options.WaveLaneCountMin, options.WaveLaneCountMax)
+            } else {
+                (32, 64)
+            };
+            if max < 32 {
+                tracing::info!(
+                    min,
+                    max,
+                    "host wave lanes (software/WARP adapter reports narrow waves; wider-wave shaders will be refused)"
+                );
+            } else {
+                tracing::info!(min, max, "host wave lanes");
+            }
+            (min, max)
+        })
+    }
+
     /// A new list, open for recording.
     pub(crate) fn new_list(&self) -> windows::core::Result<HostList> {
         // SAFETY: plain object creation.

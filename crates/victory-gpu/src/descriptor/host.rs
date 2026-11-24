@@ -205,10 +205,11 @@ impl HostHeap {
                     // shortcut: descriptors past the host's limit are left
                     // out; a title that reaches them needs remapping.
                     tracing::warn!(error = %e, count, "host view heap capped at {PORTABLE_VIEWS}");
+                    // local (#747): 2^16 dynamic slots run dry in the world on NVIDIA.
                     (
                         make(PORTABLE_VIEWS).ok()?,
-                        PORTABLE_VIEWS - MIN_DYNAMIC - aliases,
-                        MIN_DYNAMIC,
+                        PORTABLE_VIEWS - DYNAMIC - aliases,
+                        DYNAMIC,
                     )
                 }
                 Err(e) => {
