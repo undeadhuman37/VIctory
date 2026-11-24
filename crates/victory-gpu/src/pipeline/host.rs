@@ -337,6 +337,21 @@ fn wave_lanes_unsupported(
     stage == "mesh" && console_wave64 && host_max < 64
 }
 
+/// Whether console wave64 mesh programs may run on hosts with narrower waves
+/// (`VICTORY_WAVE64_MESH=1`): only those that do not read console lanes, since
+/// the translator declares the wave size of the others.
+// shortcut: off by default until a world run on an NVIDIA host stays up with it.
+fn wave64_mesh_allowed() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VICTORY_WAVE64_MESH").is_ok_and(|v| v == "1"))
+}
+
+/// Whether a mesh module that declares `emitted` (its `PSV0` wave range) cannot
+/// run on a host whose waves have `host_lanes` lanes, with wave64 mesh allowed.
+fn mesh_wave_unsupported(emitted: Option<(u32, u32)>, (host_min, host_max): (u32, u32)) -> bool {
+    emitted.is_some_and(|(min, max)| host_max < min || host_min > max)
+}
+
 /// Logs a pipeline that gets no host pipeline, once per reason.
 fn refuse(reason: &'static str, shaders: &[Arc<Shader>]) -> Option<HostPipeline> {
     static SEEN: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
@@ -387,7 +402,9 @@ impl HostPipeline {
             );
         }
         let host_lanes = host()?.wave_lanes();
+        let mesh_ok = wave64_mesh_allowed();
         if let Some(ms) = mesh
+            && !mesh_ok
             && wave_lanes_unsupported(ms.stage, ms.wave64(), None, host_lanes)
         {
             return refuse(
@@ -402,7 +419,12 @@ impl HostPipeline {
         for (s, _) in &stages {
             let t = s.translated()?;
             let emitted = dxil_wave_lanes(&t.host.dxil);
-            if wave_lanes_unsupported(s.stage, s.wave64(), emitted, host_lanes) {
+            let refused = if mesh_ok && s.stage == "mesh" {
+                mesh_wave_unsupported(emitted, host_lanes)
+            } else {
+                wave_lanes_unsupported(s.stage, s.wave64(), emitted, host_lanes)
+            };
+            if refused {
                 return refuse(
                     if host_lanes.1 < 32 {
                         "a shader requiring wider waves than this host supports (e.g. 4-lane WARP)"
@@ -784,7 +806,7 @@ fn root_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::{dxil_wave_lanes, wave_lanes_unsupported};
+    use super::{dxil_wave_lanes, mesh_wave_unsupported, wave_lanes_unsupported};
 
     fn synthetic_dxbc_with_psv0(min_lanes: u32, max_lanes: u32) -> Vec<u8> {
         let mut psv = Vec::new();
@@ -883,5 +905,12 @@ mod tests {
             dxil_wave_lanes(&synthetic_dxbc_with_psv0(32, 32)),
             Some((32, 32))
         );
+    }
+
+    #[test]
+    fn allowed_wave64_mesh_is_refused_only_when_it_declares_a_wave_size() {
+        assert!(!mesh_wave_unsupported(None, (32, 32)));
+        assert!(mesh_wave_unsupported(Some((64, 64)), (32, 32)));
+        assert!(!mesh_wave_unsupported(Some((64, 64)), (32, 64)));
     }
 }
