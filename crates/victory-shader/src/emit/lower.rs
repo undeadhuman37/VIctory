@@ -484,22 +484,6 @@ impl<'a> Lower<'a> {
                         .support(g)
                         .iter()
                         .any(|a| matches!(a, Atom::Opaque(_) | Atom::Constant(_)))
-                }) || insts().any(|i| {
-                    matches!(
-                        i.name(),
-                        "v_cndmask_b32"
-                            | "v_add_co_ci_u32"
-                            | "v_sub_co_ci_u32"
-                            | "v_subrev_co_ci_u32"
-                    ) && match &i.fields {
-                        Fields::Valu(v) => match v.src.get(2) {
-                            Some(&Operand::Scalar { code, .. }) => i
-                                .read(Reg::S(code))
-                                .is_none_or(|m| !x.st.masks.contains_key(&m)),
-                            _ => false,
-                        },
-                        _ => false,
-                    }
                 })
             };
             console_lanes = reads_whole || masks_held || insts().any(in_half);

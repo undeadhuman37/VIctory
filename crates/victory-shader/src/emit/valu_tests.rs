@@ -948,28 +948,3 @@ fn v_cmp_class_f16_matches_rdna2() {
         );
     });
 }
-
-/// A select whose mask is a plain SGPR (here a root constant), so the
-/// structure pass does not follow it: this lane takes its own bit of the
-/// number. Inline 0 and -1 masks pick src0 and src1 in every lane.
-#[test]
-fn v_cndmask_on_an_untracked_mask_tests_this_lanes_bit() {
-    // v_cndmask_b32_e64 v0, v1, v2, <mask> (VOP3 0x101); s3 holds the mask.
-    let from_sgpr = build_valu_cs(&vop3(0x101, 0, vgpr(1), vgpr(2), sgpr(3)));
-    let hw = &[("hardware", false)];
-    run_cases_on(
-        &from_sgpr,
-        &[[10, 20, 0, 0], [10, 20, 0, 1], [10, 20, 0, 2], [10, 20, 0, !0]],
-        hw,
-        |label, i, inp, got| {
-            let want = if inp[3] & 1 != 0 { inp[1] } else { inp[0] };
-            assert_eq!(got, want, "{label} case {i}");
-        },
-    );
-    for (mask, pick) in [(128u16, 0usize), (193, 1)] {
-        let k = build_valu_cs(&vop3(0x101, 0, vgpr(1), vgpr(2), mask));
-        run_cases_on(&k, &[[10, 20, 0, 0]], hw, |label, _, inp, got| {
-            assert_eq!(got, inp[pick], "{label} inline {mask}");
-        });
-    }
-}
