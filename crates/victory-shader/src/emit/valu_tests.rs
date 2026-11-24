@@ -1264,3 +1264,30 @@ fn v_cmp_class_f16_matches_rdna2() {
         );
     });
 }
+
+/// `v_cvt_f32_f64` rounds a double (a VGPR pair) to the nearest f32, overflowing
+/// to infinity and underflowing to zero.
+#[test]
+fn v_cvt_f32_f64_rounds_the_pair_to_nearest_even() {
+    // v_cvt_f32_f64 v0, v[1:2] (VOP1 0x0F); the root constants are v1..v4.
+    let shader = build_valu_cs(&[vop1(0x0F, 0, vgpr(1))]);
+    let doubles = [
+        1.5f64,
+        -2.25e10,
+        0.1,
+        16_777_217.0, // halfway between two f32: rounds to even
+        1e300,        // beyond f32: infinity
+        -1e-50,       // below f32 denormals: -0
+        0.0,
+    ];
+    let cases: Vec<[u32; 4]> = doubles
+        .iter()
+        .map(|d| {
+            let b = d.to_bits();
+            [b as u32, (b >> 32) as u32, 0, 0]
+        })
+        .collect();
+    run_cases(&shader, &cases, |label, i, _, got| {
+        assert_eq!(got, (doubles[i] as f32).to_bits(), "{label} case {i}: {}", doubles[i]);
+    });
+}
