@@ -124,7 +124,7 @@ fn program() -> HostShader {
     container.extend([0; 16]);
     container.extend([1u32, 32, 0].into_iter().flat_map(u32::to_le_bytes));
     let c = victory_shader::Container::parse(&container).unwrap();
-    let cs = victory_shader::emit::emit(&c, &native, &p, &st, &io, &res).unwrap();
+    let cs = victory_shader::emit::emit(&c, &native, &p, &st, &io, &res, victory_shader::emit::Target::ANY).unwrap();
     assert!(cs.stride_table);
     cs
 }
