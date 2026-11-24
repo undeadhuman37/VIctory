@@ -63,6 +63,9 @@ pub(crate) struct Shader {
     container: Vec<u8>,
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
+    /// Whether its native program runs in 64-lane console waves.
+    #[cfg(windows)]
+    wave64: OnceLock<bool>,
 }
 
 impl std::fmt::Debug for Shader {
@@ -88,6 +91,8 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 container: bytes.to_vec(),
                 #[cfg(windows)]
                 translated: OnceLock::new(),
+                #[cfg(windows)]
+                wave64: OnceLock::new(),
             })
         })
         .clone()
@@ -102,6 +107,20 @@ pub(crate) struct Translated {
 
 #[cfg(windows)]
 impl Shader {
+    /// Whether the container's native program runs in 64-lane console waves.
+    pub(crate) fn wave64(&self) -> bool {
+        *self.wave64.get_or_init(|| {
+            victory_shader::Container::parse(&self.container)
+                .ok()
+                .and_then(|c| {
+                    c.part(victory_shader::FourCC::DXIL)
+                        .map(|p| p.data.to_vec())
+                })
+                .and_then(|d| victory_shader::native::native_programs(&d).ok())
+                .is_some_and(|ps| ps.iter().any(|p| p.wave64))
+        })
+    }
+
     /// The translation, made on first use; a shader that does not
     /// translate is logged once.
     pub(crate) fn translated(&self) -> Option<&Translated> {
