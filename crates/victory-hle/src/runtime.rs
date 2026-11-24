@@ -95,7 +95,10 @@ impl Title {
                 .find(|(p, _)| p == path)
                 .map(|(_, text)| text.as_str())
         };
-        let id = get("Game/TitleId").and_then(|v| u32::from_str_radix(v, 16).ok());
+        let id = get("Game/TitleId").and_then(|v| {
+            let v = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")).unwrap_or(v);
+            u32::from_str_radix(v, 16).ok()
+        });
         let storage_mb = get("Game/PersistentLocalStorage/SizeMB").and_then(|v| v.parse().ok());
         Title {
             id: id.unwrap_or(0),
@@ -148,7 +151,8 @@ fn elements(text: &str) -> Vec<(String, String)> {
             .next()
             .unwrap_or("");
         path.push(name);
-        let body = rest[..rest.find('<').unwrap_or(rest.len())].trim();
+        // A self-closing element has no body: the text after it belongs to its parent.
+        let body = if closed { "" } else { rest[..rest.find('<').unwrap_or(rest.len())].trim() };
         let body = [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&apos;", "'"), ("&amp;", "&")]
             .iter()
             .fold(body.to_owned(), |b, (entity, c)| b.replace(entity, c));
@@ -222,5 +226,16 @@ mod tests {
         assert_eq!((t.id, t.storage_bytes), (0x639A_A8DD, 1024 << 20));
         assert_eq!(t.store_id, "9&C");
         assert_eq!(Title::from_manifest("").storage_bytes, 0);
+    }
+
+    #[test]
+    fn hex_prefixed_title_id_and_self_closing_bodies() {
+        for id in ["0x639AA8DD", "0X639aa8dd"] {
+            let t = Title::from_manifest(&format!("<Game><TitleId>{id}</TitleId></Game>"));
+            assert_eq!(t.id, 0x639A_A8DD, "{id}");
+        }
+        // The text after `<StoreId/>` is the parent's, not the empty element's.
+        let t = Title::from_manifest("<Game><StoreId/>stray<TitleId>1</TitleId></Game>");
+        assert_eq!((t.store_id.as_str(), t.id), ("", 1));
     }
 }
