@@ -92,6 +92,7 @@ fn build_with(words: &[u32], buffers: bool, nonuniform: u32) -> HostShader {
         root_cbvs: lowered.root_cbvs,
         root_srvs: lowered.root_srvs,
         stride_table: lowered.stride_table,
+        bounded_loops: lowered.bounded_loops,
     };
     if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
         v.validate(&mut shader.dxil.clone())

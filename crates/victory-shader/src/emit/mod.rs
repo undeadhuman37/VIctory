@@ -167,6 +167,9 @@ pub struct HostShader {
     /// True when the shader reads the runtime stride table (`t0` in
     /// [`STRIDE_SPACE`]).
     pub stride_table: bool,
+    /// Loops that stop after [`lower::CONSOLE_FLOW_LOOP_LIMIT`] iterations
+    /// where the console would run on (0 unless run as the console runs it).
+    pub bounded_loops: u32,
 }
 
 impl HostShader {
@@ -406,6 +409,7 @@ pub fn emit(
         root_cbvs: l.root_cbvs,
         root_srvs: l.root_srvs,
         stride_table: l.stride_table,
+        bounded_loops: l.bounded_loops,
     })
 }
 
@@ -759,6 +763,7 @@ mod tests {
             root_cbvs: Vec::new(),
             root_srvs: Vec::new(),
             stride_table: false,
+            bounded_loops: 0,
         };
         let file = |var: &str, stage| {
             std::env::var(var).ok().map(|p| super::HostShader {
@@ -770,6 +775,7 @@ mod tests {
                 root_cbvs: Vec::new(),
                 root_srvs: Vec::new(),
                 stride_table: false,
+                bounded_loops: 0,
             })
         };
         let ps = file("VICTORY_REF_PS", crate::HwStage::Ps).unwrap_or(ps);
@@ -1187,6 +1193,7 @@ mod tests {
             root_cbvs: l.root_cbvs,
             root_srvs: l.root_srvs,
             stride_table: l.stride_table,
+            bounded_loops: l.bounded_loops,
         }
     }
 

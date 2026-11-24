@@ -36,6 +36,8 @@ pub(crate) struct Lowered {
     pub root_cbvs: Vec<u8>,
     pub root_srvs: Vec<u8>,
     pub stride_table: bool,
+    /// Loops stopped sooner than [`LOOP_LIMIT`] ([`CONSOLE_FLOW_LOOP_LIMIT`]).
+    pub bounded_loops: u32,
     pub user_data: Vec<UserData>,
     pub samplers: Vec<[u32; 4]>,
     /// Heap handles made with a non-uniform index.
@@ -294,6 +296,12 @@ struct Lower<'a> {
 /// program as killed (a pixel discards).
 // shortcut: a genuine loop of more iterations than this is cut short too.
 pub(super) const LOOP_LIMIT: u32 = 1 << 20;
+
+/// The limit for a program run as the console runs it ([`CONSOLE_FLOW`]),
+/// where each iteration also costs a group barrier at every LDS access: a
+/// loop whose exit the translation gets wrong then costs a second a frame
+/// at the full limit. (Not lower: a test runs a 4096-iteration loop in it.)
+pub(super) const CONSOLE_FLOW_LOOP_LIMIT: u32 = 1 << 14;
 
 /// Lane masks read as numbers (`s_bcnt1`, `s_ff1`, `v_mbcnt`, scalar
 /// compares, bit tests) are ballots of the lanes' booleans, taken where the
@@ -1160,6 +1168,7 @@ impl<'a> Lower<'a> {
             self.tail[b] = Some(self.cur);
             self.exit(b)?;
         }
+        let loops = self.counters.len() as u32;
         self.fill_phis()?;
         let user_data = self.user_reads.values().copied().collect();
         self.s.samplers = self.samplers.len() as u32;
@@ -1167,7 +1176,13 @@ impl<'a> Lower<'a> {
         let root_srvs = self.s.root_srvs.iter().map(|r| r.0).collect();
         let stride_table = self.s.stride_table.is_some();
         let cmp_samplers = self.s.cmp_samplers;
+        let bounded_loops = if self.console_cf && super::loop_limit() > CONSOLE_FLOW_LOOP_LIMIT {
+            loops
+        } else {
+            0
+        };
         Ok(Lowered {
+            bounded_loops,
             cmp_samplers,
             root_cbvs,
             root_srvs,
@@ -7668,7 +7683,11 @@ impl<'a> Lower<'a> {
         let (phi, _) = self.counters[&to];
         let one = self.s.m.i32(1);
         let next = self.s.m.bin(c, Bin::Add, phi, one);
-        let limit = self.s.m.i32(super::loop_limit());
+        let limit = super::loop_limit();
+        let limit = self
+            .s
+            .m
+            .i32(if self.console_cf { limit.min(CONSOLE_FLOW_LOOP_LIMIT) } else { limit });
         self.counters
             .get_mut(&to)
             .expect("header")

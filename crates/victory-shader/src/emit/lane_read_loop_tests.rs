@@ -229,3 +229,15 @@ fn lane_read_loop_with_a_joined_exec_back_edge() {
         eprintln!("{name}: joined back edge exact");
     }
 }
+
+/// A loop in a program run as the console runs it stops sooner than any
+/// other, and is counted for the log.
+#[test]
+fn console_flow_loops_are_bounded() {
+    let halves = super::Target {
+        lanes_min: 32,
+        lanes_max: 32,
+    };
+    let cs = emit(&program(64, 40, false), halves);
+    assert!(cs.bounded_loops > 0, "console flow loop not bounded");
+}
