@@ -7233,6 +7233,59 @@ impl<'a> Lower<'a> {
                 let r = self.s.m.bin(c, Bin::Or, halves[0], hi);
                 int(self, r)
             }
+            "v_cvt_f32_f64" => {
+                // A double in a register pair (or an inline constant, whose
+                // dword is the high one), rounded to nearest even.
+                let (lo, hi) = match *v.src.first().ok_or("a missing operand")? {
+                    Operand::Vector { reg, .. } => {
+                        let at = |l: &mut Self, r: u8| -> Result<V, Why> {
+                            let w = inst.read(Reg::V(r)).ok_or("an unread operand")?;
+                            l.i32_of(w)
+                        };
+                        (at(self, reg)?, at(self, reg + 1)?)
+                    }
+                    Operand::Scalar { code, .. } if code != NULL => {
+                        let at = |l: &mut Self, r: u8| -> Result<V, Why> {
+                            let w = inst.read(Reg::S(r)).ok_or("an unread operand")?;
+                            l.i32_of(w)
+                        };
+                        (at(self, code)?, at(self, code + 1)?)
+                    }
+                    Operand::Const(c @ 240..=247) => {
+                        // 0.5, -0.5, 1, -1, 2, -2, 4, -4 as doubles' high dwords.
+                        let hi = [
+                            0x3FE0_0000u32,
+                            0xBFE0_0000,
+                            0x3FF0_0000,
+                            0xBFF0_0000,
+                            0x4000_0000,
+                            0xC000_0000,
+                            0x4010_0000,
+                            0xC010_0000,
+                        ][usize::from(c - 240)];
+                        (self.s.m.i32(0), self.s.m.i32(hi))
+                    }
+                    Operand::Const(128) => (self.s.m.i32(0), self.s.m.i32(0)),
+                    Operand::Literal(x) => (self.s.m.i32(0), self.s.m.i32(x)),
+                    _ => return Err("a 64-bit float operand form"),
+                };
+                let mut hi = hi;
+                if v.abs & 1 != 0 {
+                    let m = self.s.m.i32(0x7FFF_FFFF);
+                    hi = self.s.m.bin(c, Bin::And, hi, m);
+                }
+                if v.neg & 1 != 0 {
+                    let m = self.s.m.i32(0x8000_0000);
+                    hi = self.s.m.bin(c, Bin::Xor, hi, m);
+                }
+                self.s.flags |= flags::DOUBLES;
+                let f64t = self.s.m.double();
+                let d = self
+                    .s
+                    .op(c, "makeDouble.f64", Attr::ReadNone, f64t, 101, &[lo, hi]);
+                let r = self.s.m.cast(c, Cast::FpTrunc, d, self.s.t.f32);
+                float(self, r)
+            }
             "v_cvt_f32_f16" if v.opsel == 0 => {
                 let a = s(self, 0)?;
                 let r = self
